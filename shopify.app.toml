@@ -1,0 +1,73 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "5a28770fc8dc1dd730294da32876b7c0"
+application_url = "https://example.com"   # ⚠️ CHANGE THIS to your actual tunnel URL (e.g., https://your-app.ngrok.io)
+embedded = true
+name = "cart discounts"
+api_version = "2026-10"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+# All original scopes are preserved – these match the template's metafields/metaobjects
+scopes = "write_products,write_metaobjects,write_metaobject_definitions,read_discounts"
+
+# ============================================
+# ONE merged webhooks section (all 5 subscriptions)
+# ============================================
+[webhooks]
+api_version = "2026-10"
+
+# Discount webhooks (for syncing threshold messages)
+[[webhooks.subscriptions]]
+topics = [ "discounts/create" ]
+uri = "/webhooks"
+
+[[webhooks.subscriptions]]
+topics = [ "discounts/update" ]
+uri = "/webhooks"
+
+[[webhooks.subscriptions]]
+topics = [ "discounts/delete" ]          # ✅ Fixed typo: added the 's'
+uri = "/webhooks"
+
+# App lifecycle webhooks (preserved from the template)
+[[webhooks.subscriptions]]
+topics = [ "app/uninstalled" ]
+uri = "/webhooks/app/uninstalled"
+
+[[webhooks.subscriptions]]
+topics = [ "app/scopes_update" ]
+uri = "/webhooks/app/scopes_update"
+
+# ============================================
+# Template defaults – PRESERVED exactly as you had them
+# ============================================
+[product.metafields.app.demo_info]
+type = "single_line_text_field"
+name = "Demo Source Info"
+description = "Tracks products created by the Shopify app template for development"
+
+  [product.metafields.app.demo_info.access]
+  admin = "merchant_read_write"
+
+[metaobjects.app.example]
+name = "Example"
+description = "An example metaobject definition created by this template"
+
+  [metaobjects.app.example.access]
+  admin = "merchant_read_write"
+
+[metaobjects.app.example.fields.title]
+name = "Title"
+type = "single_line_text_field"
+required = true
+
+[metaobjects.app.example.fields.description]
+name = "Description"
+type = "multi_line_text_field"
+
+[auth]
+redirect_urls = [ "https://example.com/api/auth" ]   # ⚠️ CHANGE THIS to match your tunnel URL
+
+[build]
+automatically_update_urls_on_dev = true
