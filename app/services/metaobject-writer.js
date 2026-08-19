@@ -1,15 +1,15 @@
 // app/services/metaobject-writer.js
 
-// App-owned metaobject type for the discount progress messages.
-// Declared in shopify.app.toml as [metaobjects.app.discount_messages],
-// AND self-provisioned at runtime below so `shopify app dev` works
-// without a deploy (the CLI only creates TOML definitions on deploy).
-const DEFINITION_TYPE = '$app:discount_messages';
+// Merchant-owned metaobject type for the discount progress messages.
+// Created at runtime via the Admin API (no CLI deploy needed) so theme
+// Liquid can read it with the plain, universally-supported key
+// `shop.metaobjects['discount_messages']`.
+const DEFINITION_TYPE = 'discount_messages';
 const MESSAGES_FIELD_KEY = 'messages_json';
 
 /**
  * Saves the discount threshold messages to a Shopify metaobject.
- * Ensures the app-owned "discount_messages" definition exists (with
+ * Ensures the merchant-owned "discount_messages" definition exists (with
  * storefront access) before writing the instance.
  *
  * @param {Object} admin - The Shopify Admin API context.
@@ -50,8 +50,8 @@ export async function saveDiscountMessages(admin, messages) {
 // ============================================================
 
 /**
- * Creates the app-owned metaobject definition with storefront access,
- * so theme Liquid (`shop.metaobjects['$app:discount_messages']`) can read it.
+ * Creates the merchant-owned metaobject definition with storefront access,
+ * so theme Liquid (`shop.metaobjects['discount_messages']`) can read it.
  * No-op if it already exists.
  */
 async function ensureMetaobjectDefinition(admin) {
@@ -61,7 +61,7 @@ async function ensureMetaobjectDefinition(admin) {
         type: "${DEFINITION_TYPE}"
         name: "Discount Messages"
         description: "Discount threshold messages shown on the cart progress bar"
-        access: { admin: MERCHANT_READ_WRITE, storefront: PUBLIC_READ }
+        access: { storefront: PUBLIC_READ }
         fieldDefinitions: [
           { key: "${MESSAGES_FIELD_KEY}", name: "Messages JSON", type: "multi_line_text_field" }
         ]
@@ -86,7 +86,7 @@ async function ensureMetaobjectDefinition(admin) {
     throw new Error(`Failed to ensure metaobject definition: ${details}`);
   }
 
-  console.log('✅ Metaobject definition "$app:discount_messages" is ready (storefront access: PUBLIC_READ).');
+  console.log('✅ Metaobject definition "discount_messages" is ready (storefront access: PUBLIC_READ).');
 }
 
 /**
