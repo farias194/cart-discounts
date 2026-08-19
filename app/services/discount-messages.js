@@ -24,14 +24,14 @@ export async function fetchDiscountThresholds(admin) {
 
     if (discount.status !== 'ACTIVE') continue;
 
-    const subtotal = discount.minimumRequirement?.subtotal?.amount;
+    const subtotal = discount.minimumRequirement?.greaterThanOrEqualToSubtotal?.amount;
     if (!subtotal) continue;
 
     const label = buildLabel(discount);
     if (!label) continue;
 
     messages.push({
-      discountId: discount.id,
+      discountId: node.id,
       title: discount.title,
       thresholdMinor: Math.round(parseFloat(subtotal) * 100),
       label,
@@ -51,13 +51,32 @@ async function withDiscountFieldHint(admin, error) {
   try {
     const response = await admin.graphql(
       `query {
-        root: __type(name: "QueryRoot") {
-          fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
-        }
-        node: __type(name: "DiscountNode") {
+        minSub: __type(name: "DiscountMinimumSubtotal") {
           kind
-          interfaces { name }
+          fields { name type { kind name ofType { kind name ofType { kind name } } } }
+        }
+        minQty: __type(name: "DiscountMinimumQuantity") {
+          kind
+          fields { name type { kind name ofType { kind name ofType { kind name } } } }
+        }
+        custGets: __type(name: "DiscountCustomerGets") {
+          kind
+          fields { name type { kind name ofType { kind name ofType { kind name } } } }
+        }
+        custGetsVal: __type(name: "DiscountCustomerGetsValue") {
+          kind
           possibleTypes { name }
+        }
+        pct: __type(name: "DiscountPercentage") {
+          kind
+          fields { name type { kind name ofType { kind name ofType { kind name } } } }
+        }
+        amt: __type(name: "DiscountAmount") {
+          kind
+          fields { name type { kind name ofType { kind name ofType { kind name } } } }
+        }
+        money: __type(name: "MoneyV2") {
+          kind
           fields { name type { kind name ofType { kind name ofType { kind name } } } }
         }
       }`
@@ -65,7 +84,6 @@ async function withDiscountFieldHint(admin, error) {
     const result = await response.json();
     const d = result.data || {};
 
-    const discountField = (d.root?.fields || []).find((f) => f.name === 'discountNodes');
     const typeChain = (t) => {
       const parts = [];
       let cur = t;
@@ -75,15 +93,11 @@ async function withDiscountFieldHint(admin, error) {
       }
       return parts.join(' > ');
     };
-
-    const node = d.node;
-    const nodeFields = (node?.fields || []).map(
-      (f) => `${f.name}: ${typeChain(f.type)}`
-    );
-    const possibleTypes = (node?.possibleTypes || []).map((p) => p.name).join(', ') || 'n/a';
+    const typeFields = (t) => (t?.fields || []).map((f) => `${f.name}: ${typeChain(f.type)}`).join('; ');
+    const possibleTypes = (t) => (t?.possibleTypes || []).map((p) => p.name).join(', ') || 'n/a';
 
     return new Error(
-      `${error.message} | discountNodes field type: ${discountField ? typeChain(discountField.type) : 'n/a'} | DiscountNode kind=${node?.kind} possibleTypes=[${possibleTypes}] fields=[${nodeFields.join('; ')}]`
+      `${error.message} | DiscountMinimumSubtotal fields=[${typeFields(d.minSub)}] | DiscountMinimumQuantity fields=[${typeFields(d.minQty)}] | DiscountCustomerGets fields=[${typeFields(d.custGets)}] | DiscountCustomerGetsValue union=[${possibleTypes(d.custGetsVal)}] | DiscountPercentage fields=[${typeFields(d.pct)}] | DiscountAmount fields=[${typeFields(d.amt)}] | MoneyV2 fields=[${typeFields(d.money)}]`
     );
   } catch {
     return error;
@@ -114,41 +128,43 @@ const AUTOMATIC_DISCOUNTS_QUERY = `
   query AutomaticDiscounts($first: Int!) {
     discountNodes(first: $first) {
       nodes {
-        ... on DiscountAutomaticNode {
-          discount {
-            id
+        id
+        discount {
+          ... on DiscountAutomaticBasic {
+            __typename
             title
             status
-            ... on DiscountAutomaticBasic {
-              minimumRequirement {
-                ... on DiscountMinimumSubtotal {
-                  subtotal {
-                    amount
-                    currencyCode
-                  }
+            minimumRequirement {
+              ... on DiscountMinimumSubtotal {
+                greaterThanOrEqualToSubtotal {
+                  amount
+                  currencyCode
                 }
               }
-              customerGets {
-                value {
-                  ... on DiscountPercentage {
-                    percentage
-                  }
-                  ... on DiscountAmount {
-                    amount {
-                      amount
-                      currencyCode
-                    }
+            }
+            customerGets {
+              value {
+                ... on DiscountPercentage {
+                  percentage
+                }
+                ... on DiscountAmount {
+                  amount {
+                    amount
+                    currencyCode
                   }
                 }
               }
             }
-            ... on DiscountAutomaticFreeShipping {
-              minimumRequirement {
-                ... on DiscountMinimumSubtotal {
-                  subtotal {
-                    amount
-                    currencyCode
-                  }
+          }
+          ... on DiscountAutomaticFreeShipping {
+            __typename
+            title
+            status
+            minimumRequirement {
+              ... on DiscountMinimumSubtotal {
+                greaterThanOrEqualToSubtotal {
+                  amount
+                  currencyCode
                 }
               }
             }

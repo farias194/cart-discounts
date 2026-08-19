@@ -76,10 +76,9 @@ async function ensureMetaobjectDefinition(admin) {
   const result = await response.json();
   const errors = result.data?.metaobjectDefinitionCreate?.userErrors || [];
 
-  const alreadyExists = errors.some(
-    (e) => e.field === 'type' && /already.*taken/i.test(e.message)
-  );
-  const fatal = errors.filter((e) => !(e.field === 'type' && /already.*taken/i.test(e.message)));
+  const isTakenError = (e) => /already.*taken/i.test(e.message);
+  const alreadyExists = errors.some(isTakenError);
+  const fatal = errors.filter((e) => !isTakenError(e));
 
   if (fatal.length > 0) {
     const details = fatal.map((e) => `${e.field}: ${e.message}`).join(', ');
@@ -87,41 +86,52 @@ async function ensureMetaobjectDefinition(admin) {
   }
 
   if (alreadyExists) {
-    // Definition exists — make sure storefront access is enabled (idempotent).
-    const findQuery = `
-      query GetDefinition {
-        metaobjectDefinitions(first: 1, type: "${DEFINITION_TYPE}") {
-          nodes { id }
-        }
-      }
-    `;
-    const findResponse = await admin.graphql(findQuery);
-    const findResult = await findResponse.json();
-    const def = findResult.data?.metaobjectDefinitions?.nodes?.[0];
-
-    if (def) {
-      const updateMutation = `
-        mutation UpdateDefinition($id: ID!) {
-          metaobjectDefinitionUpdate(id: $id, definition: {
-            access: { storefront: PUBLIC_READ }
-          }) {
-            metaobjectDefinition { id }
-            userErrors { field message }
+    // Definition exists — try to ensure storefront access, but never block the
+    // sync if the schema differs or the definition can't be located (the user
+    // can enable Storefront access manually in Settings → Custom data).
+    console.log('⚠️ Definition "discount_messages" already exists — ensuring storefront access (best effort)...');
+    try {
+      const findQuery = `
+        query GetDefinition {
+          metaobjectDefinitions(first: 50) {
+            nodes { id type }
           }
         }
       `;
-      const updateResponse = await admin.graphql(updateMutation, { variables: { id: def.id } });
-      const updateResult = await updateResponse.json();
-      const updateErrors = updateResult.data?.metaobjectDefinitionUpdate?.userErrors || [];
-      if (updateErrors.length > 0) {
-        const details = updateErrors.map((e) => `${e.field}: ${e.message}`).join(', ');
-        throw new Error(`Failed to enable storefront access on definition: ${details}`);
-      }
-      console.log('⚠️ Definition existed — ensured storefront access is enabled.');
-    }
-  }
+      const findResponse = await admin.graphql(findQuery);
+      const findResult = await findResponse.json();
+      const def = (findResult.data?.metaobjectDefinitions?.nodes || []).find(
+        (n) => n.type === DEFINITION_TYPE
+      );
 
-  console.log('✅ Metaobject definition "discount_messages" is ready (storefront access: PUBLIC_READ).');
+      if (def) {
+        const updateMutation = `
+          mutation UpdateDefinition($id: ID!) {
+            metaobjectDefinitionUpdate(id: $id, definition: {
+              access: { storefront: PUBLIC_READ }
+            }) {
+              metaobjectDefinition { id }
+              userErrors { field message }
+            }
+          }
+        `;
+        const updateResponse = await admin.graphql(updateMutation, { variables: { id: def.id } });
+        const updateResult = await updateResponse.json();
+        const updateErrors = updateResult.data?.metaobjectDefinitionUpdate?.userErrors || [];
+        if (updateErrors.length > 0) {
+          console.log(`⚠️ Storefront access update returned: ${updateErrors.map((e) => `${e.field}: ${e.message}`).join(', ')}`);
+        } else {
+          console.log('✅ Storefront access ensured on existing definition.');
+        }
+      } else {
+        console.log('⚠️ Could not locate the existing definition to update — enable Storefront access manually in Settings → Custom data if the bar still doesn\'t show.');
+      }
+    } catch (err) {
+      console.log(`⚠️ Could not auto-ensure storefront access (${err.message}) — enable it manually in Settings → Custom data if needed.`);
+    }
+  } else {
+    console.log('✅ Metaobject definition "discount_messages" is ready (storefront access: PUBLIC_READ).');
+  }
 }
 
 /**
@@ -130,14 +140,16 @@ async function ensureMetaobjectDefinition(admin) {
  */
 async function getMetaobjectIdByHandle(admin, handle) {
   const query = `
-    query GetMetaobject($handle: String!) {
+    query GetMetaobject($handle: MetaobjectHandleInput!) {
       metaobjectByHandle(handle: $handle) {
         id
       }
     }
   `;
 
-  const response = await admin.graphql(query, { variables: { handle } });
+  const response = await admin.graphql(query, {
+    variables: { handle: { type: DEFINITION_TYPE, handle } },
+  });
   const { data } = await response.json();
 
   return data.metaobjectByHandle?.id || null;
