@@ -52,7 +52,7 @@ export async function saveDiscountMessages(admin, messages) {
 /**
  * Creates the merchant-owned metaobject definition with storefront access,
  * so theme Liquid (`shop.metaobjects['discount_messages']`) can read it.
- * No-op if it already exists.
+ * If the definition already exists, ensures storefront access is ON.
  */
 async function ensureMetaobjectDefinition(admin) {
   const mutation = `
@@ -76,14 +76,49 @@ async function ensureMetaobjectDefinition(admin) {
   const result = await response.json();
   const errors = result.data?.metaobjectDefinitionCreate?.userErrors || [];
 
-  // "Type has already been taken" means the definition exists — that's fine.
-  const fatal = errors.filter(
-    (e) => !(e.field === 'type' && /already.*taken/i.test(e.message))
+  const alreadyExists = errors.some(
+    (e) => e.field === 'type' && /already.*taken/i.test(e.message)
   );
+  const fatal = errors.filter((e) => !(e.field === 'type' && /already.*taken/i.test(e.message)));
 
   if (fatal.length > 0) {
     const details = fatal.map((e) => `${e.field}: ${e.message}`).join(', ');
     throw new Error(`Failed to ensure metaobject definition: ${details}`);
+  }
+
+  if (alreadyExists) {
+    // Definition exists — make sure storefront access is enabled (idempotent).
+    const findQuery = `
+      query GetDefinition {
+        metaobjectDefinitions(first: 1, type: "${DEFINITION_TYPE}") {
+          nodes { id }
+        }
+      }
+    `;
+    const findResponse = await admin.graphql(findQuery);
+    const findResult = await findResponse.json();
+    const def = findResult.data?.metaobjectDefinitions?.nodes?.[0];
+
+    if (def) {
+      const updateMutation = `
+        mutation UpdateDefinition($id: ID!) {
+          metaobjectDefinitionUpdate(id: $id, definition: {
+            access: { storefront: PUBLIC_READ }
+          }) {
+            metaobjectDefinition { id }
+            userErrors { field message }
+          }
+        }
+      `;
+      const updateResponse = await admin.graphql(updateMutation, { variables: { id: def.id } });
+      const updateResult = await updateResponse.json();
+      const updateErrors = updateResult.data?.metaobjectDefinitionUpdate?.userErrors || [];
+      if (updateErrors.length > 0) {
+        const details = updateErrors.map((e) => `${e.field}: ${e.message}`).join(', ');
+        throw new Error(`Failed to enable storefront access on definition: ${details}`);
+      }
+      console.log('⚠️ Definition existed — ensured storefront access is enabled.');
+    }
   }
 
   console.log('✅ Metaobject definition "discount_messages" is ready (storefront access: PUBLIC_READ).');

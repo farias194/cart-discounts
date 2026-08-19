@@ -3,6 +3,8 @@ import { useFetcher } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { fetchDiscountThresholds } from "~/services/discount-messages";
+import { saveDiscountMessages } from "~/services/metaobject-writer";
 
 export const loader = async ({ request }) => {
   await authenticate.admin(request);
@@ -12,6 +14,16 @@ export const loader = async ({ request }) => {
 
 export const action = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
+  const formData = await request.formData();
+
+  // Manual sync: fetch discounts and write the metaobject the theme reads.
+  // This is the same logic the /webhooks route runs on discounts/create|update|delete.
+  if (formData.get("intent") === "sync-discounts") {
+    const messages = await fetchDiscountThresholds(admin);
+    await saveDiscountMessages(admin, messages);
+    return { synced: true, messageCount: messages.length };
+  }
+
   const color = ["Red", "Orange", "Yellow", "Green"][
     Math.floor(Math.random() * 4)
   ];
@@ -129,6 +141,8 @@ export default function Index() {
     }
   }, [fetcher.data?.product?.id, shopify]);
   const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  const syncDiscounts = () =>
+    fetcher.submit({ intent: "sync-discounts" }, { method: "POST" });
 
   return (
     <s-page heading="Shopify app template">
@@ -156,6 +170,27 @@ export default function Index() {
           </s-link>{" "}
           mutation demo, to provide a starting point for app development.
         </s-paragraph>
+      </s-section>
+      <s-section heading="Discount progress bar">
+        <s-paragraph>
+          Writes your current automatic discounts (with minimum purchase
+          amounts) into the <code>discount_messages</code> metaobject that the
+          cart progress bar reads. Same logic the webhook runs automatically.
+        </s-paragraph>
+        <s-stack direction="inline" gap="base">
+          <s-button
+            onClick={syncDiscounts}
+            {...(isLoading ? { loading: true } : {})}
+          >
+            Sync discount messages
+          </s-button>
+        </s-stack>
+        {fetcher.data?.synced && (
+          <s-paragraph>
+            ✅ Synced {fetcher.data.messageCount} threshold message(s). Now
+            refresh the cart page/drawer to see the progress bar.
+          </s-paragraph>
+        )}
       </s-section>
       <s-section heading="Get started with products">
         <s-paragraph>
