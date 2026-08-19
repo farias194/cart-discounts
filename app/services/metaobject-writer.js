@@ -22,10 +22,13 @@ export async function saveDiscountMessages(admin, messages) {
   // 1. The handle (unique ID) for our metaobject instance
   const handle = 'discount_messages';
 
-  // 2. Check if an instance (record) already exists
+  // 2. Find the Online Store publication so the instance is visible to Liquid
+  const publicationId = await getOnlineStorePublicationId(admin);
+
+  // 3. Check if an instance (record) already exists
   let metaobjectId = await getMetaobjectIdByHandle(admin, handle);
 
-  // 3. Prepare the data: Convert the messages array to a JSON string
+  // 4. Prepare the data: Convert the messages array to a JSON string
   const fields = [
     {
       key: MESSAGES_FIELD_KEY,
@@ -33,16 +36,22 @@ export async function saveDiscountMessages(admin, messages) {
     },
   ];
 
-  // 4. Create or update the metaobject instance
+  // 5. Create or update the metaobject instance (active + published)
   if (metaobjectId) {
     // UPDATE existing record
     await updateMetaobject(admin, metaobjectId, fields);
+    if (publicationId) {
+      await publishMetaobject(admin, metaobjectId, publicationId);
+    }
     console.log(`✅ Updated metaobject (ID: ${metaobjectId}) with ${messages.length} messages.`);
   } else {
     // CREATE new record
-    await createMetaobject(admin, handle, fields);
+    metaobjectId = await createMetaobject(admin, handle, fields, publicationId);
     console.log(`✅ Created new metaobject with ${messages.length} messages.`);
   }
+
+  // 6. Diagnostic: report the status Liquid will actually see
+  await logMetaobjectStatus(admin, metaobjectId);
 }
 
 // ============================================================
@@ -156,16 +165,20 @@ async function getMetaobjectIdByHandle(admin, handle) {
 }
 
 /**
- * Creates a new metaobject instance.
+ * Creates a new metaobject instance, active and published to the Online Store
+ * so theme Liquid (`shop.metaobjects`) can see it.
  */
-async function createMetaobject(admin, handle, fields) {
+async function createMetaobject(admin, handle, fields, publicationId) {
   const mutation = `
-    mutation CreateMetaobject($handle: String!, $fields: [MetaobjectFieldInput!]!) {
-      metaobjectCreate(metaobject: {
-        type: "${DEFINITION_TYPE}"
-        handle: $handle
-        fields: $fields
-      }) {
+    mutation CreateMetaobject($handle: String!, $fields: [MetaobjectFieldInput!]!, $publications: [PublicationInput!]) {
+      metaobjectCreate(
+        metaobject: {
+          type: "${DEFINITION_TYPE}"
+          handle: $handle
+          fields: $fields
+        }
+        publications: $publications
+      ) {
         metaobject { id }
         userErrors { field message }
       }
@@ -173,7 +186,11 @@ async function createMetaobject(admin, handle, fields) {
   `;
 
   const response = await admin.graphql(mutation, {
-    variables: { handle, fields },
+    variables: {
+      handle,
+      fields,
+      publications: publicationId ? [{ publicationId }] : [],
+    },
   });
   const result = await response.json();
 
@@ -188,7 +205,7 @@ async function createMetaobject(admin, handle, fields) {
 }
 
 /**
- * Updates an existing metaobject instance.
+ * Updates an existing metaobject instance, keeping it active.
  */
 async function updateMetaobject(admin, id, fields) {
   const mutation = `
@@ -213,4 +230,76 @@ async function updateMetaobject(admin, id, fields) {
   }
 
   return result.data.metaobjectUpdate.metaobject.id;
+}
+
+/**
+ * Publishes the metaobject instance to a publication (e.g. Online Store).
+ * Best-effort: logs instead of throwing so the sync can continue.
+ */
+async function publishMetaobject(admin, id, publicationId) {
+  try {
+    const mutation = `
+      mutation PublishMetaobject($id: ID!, $publications: [PublicationInput!]!) {
+        metaobjectPublish(id: $id, publications: $publications) {
+          userErrors { field message }
+        }
+      }
+    `;
+    const response = await admin.graphql(mutation, {
+      variables: { id, publications: [{ publicationId }] },
+    });
+    const result = await response.json();
+    const errors = result.data?.metaobjectPublish?.userErrors || [];
+    if (errors.length > 0) {
+      console.log(`⚠️ metaobjectPublish: ${errors.map((e) => `${e.field}: ${e.message}`).join(', ')}`);
+    } else {
+      console.log(`📌 Published metaobject to Online Store.`);
+    }
+  } catch (err) {
+    console.log(`⚠️ metaobjectPublish failed: ${err.message}`);
+  }
+}
+
+/**
+ * Finds the Online Store publication id. Returns null if not found (best effort).
+ */
+async function getOnlineStorePublicationId(admin) {
+  try {
+    const query = `
+      query Publications {
+        publications(first: 20) {
+          nodes { id name }
+        }
+      }
+    `;
+    const response = await admin.graphql(query);
+    const result = await response.json();
+    const pubs = result.data?.publications?.nodes || [];
+    const match = pubs.find((p) => /online store/i.test(p.name));
+    if (!match) {
+      console.log(`⚠️ No "Online Store" publication found (got: ${pubs.map((p) => p.name).join(', ') || 'none'}) — instance may not be visible to Liquid until published.`);
+    }
+    return match?.id || null;
+  } catch (err) {
+    console.log(`⚠️ Could not look up Online Store publication: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Logs the instance status Liquid will see (draft instances return nil).
+ */
+async function logMetaobjectStatus(admin, id) {
+  try {
+    const query = `
+      query MetaobjectStatus($id: ID!) {
+        metaobject(id: $id) { id status }
+      }
+    `;
+    const response = await admin.graphql(query, { variables: { id } });
+    const result = await response.json();
+    console.log(`📋 Metaobject status: ${result.data?.metaobject?.status ?? '(no status field — not publishable)'}`);
+  } catch (err) {
+    console.log(`⚠️ Could not read metaobject status: ${err.message}`);
+  }
 }
