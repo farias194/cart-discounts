@@ -5,8 +5,6 @@ import { fetchDiscountThresholds } from '~/services/discount-messages';
 import { saveDiscountMessages } from '~/services/metaobject-writer';
 
 export async function action({ request }) {
-  // TEMP DIAGNOSTIC — logs ANY request that reaches this route, even if auth fails
-  console.log(`🔔 WEBHOOK ROUTE HIT: ${request.method} ${new URL(request.url).pathname}${new URL(request.url).search}`);
   try {
     const { admin, topic, shop } = await authenticate.webhook(request);
     console.log(`📨 Webhook received: ${topic} for ${shop}`);
