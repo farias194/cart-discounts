@@ -1,18 +1,24 @@
 // app/services/discount-messages.js
 
 export async function fetchDiscountThresholds(admin) {
-  const response = await admin.graphql(AUTOMATIC_DISCOUNTS_QUERY, {
-    variables: { first: 50 },
-  });
-  const { data, errors } = await response.json();
+  let data;
+  try {
+    const response = await admin.graphql(AUTOMATIC_DISCOUNTS_QUERY, {
+      variables: { first: 50 },
+    });
+    const result = await response.json();
 
-  if (errors) {
-    throw new Error(`Failed to fetch discounts: ${JSON.stringify(errors)}`);
+    if (result.errors) {
+      throw new Error(`Failed to fetch discounts: ${JSON.stringify(result.errors)}`);
+    }
+    data = result.data;
+  } catch (error) {
+    throw await withDiscountFieldHint(admin, error);
   }
 
   const messages = [];
 
-  for (const node of data.discounts.nodes) {
+  for (const node of data.discountNodes.nodes) {
     const discount = node?.discount;
     if (!discount) continue;
 
@@ -34,6 +40,54 @@ export async function fetchDiscountThresholds(admin) {
   }
 
   return messages.sort((a, b) => a.thresholdMinor - b.thresholdMinor);
+}
+
+/**
+ * If the discounts query fails with a schema error, introspect the actual
+ * shape of the discount types in this API version and append it to the error
+ * so the correct query can be written in one shot.
+ */
+async function withDiscountFieldHint(admin, error) {
+  try {
+    const response = await admin.graphql(
+      `query {
+        root: __type(name: "QueryRoot") {
+          fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+        }
+        node: __type(name: "DiscountNode") {
+          kind
+          interfaces { name }
+          possibleTypes { name }
+          fields { name type { kind name ofType { kind name ofType { kind name } } } }
+        }
+      }`
+    );
+    const result = await response.json();
+    const d = result.data || {};
+
+    const discountField = (d.root?.fields || []).find((f) => f.name === 'discountNodes');
+    const typeChain = (t) => {
+      const parts = [];
+      let cur = t;
+      while (cur) {
+        parts.push(`${cur.kind || ''}:${cur.name || ''}`);
+        cur = cur.ofType;
+      }
+      return parts.join(' > ');
+    };
+
+    const node = d.node;
+    const nodeFields = (node?.fields || []).map(
+      (f) => `${f.name}: ${typeChain(f.type)}`
+    );
+    const possibleTypes = (node?.possibleTypes || []).map((p) => p.name).join(', ') || 'n/a';
+
+    return new Error(
+      `${error.message} | discountNodes field type: ${discountField ? typeChain(discountField.type) : 'n/a'} | DiscountNode kind=${node?.kind} possibleTypes=[${possibleTypes}] fields=[${nodeFields.join('; ')}]`
+    );
+  } catch {
+    return error;
+  }
 }
 
 function buildLabel(discount) {
@@ -58,7 +112,7 @@ function buildLabel(discount) {
 
 const AUTOMATIC_DISCOUNTS_QUERY = `
   query AutomaticDiscounts($first: Int!) {
-    discounts(first: $first) {
+    discountNodes(first: $first) {
       nodes {
         ... on DiscountAutomaticNode {
           discount {
