@@ -66,6 +66,19 @@ required = true
 name = "Description"
 type = "multi_line_text_field"
 
+# Discount threshold messages synced by the discounts webhook
+[metaobjects.app.discount_messages]
+name = "Discount Messages"
+description = "Stores the discount threshold progress messages shown on the cart page"
+
+  [metaobjects.app.discount_messages.access]
+  admin = "merchant_read_write"
+  storefront = "public_read"
+
+  [metaobjects.app.discount_messages.fields.messages_json]
+  name = "Messages JSON"
+  type = "multi_line_text_field"
+
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]   # ⚠️ CHANGE THIS to match your tunnel URL
 

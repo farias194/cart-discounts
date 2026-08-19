@@ -2,7 +2,8 @@
 
 /**
  * Saves the discount threshold messages to a Shopify metaobject.
- * Assumes the "discount_messages" definition already exists in the admin.
+ * The app-owned "discount_messages" definition is declared in shopify.app.toml
+ * (type $app:discount_messages) and provisioned on app deploy/dev.
  *
  * @param {Object} admin - The Shopify Admin API context.
  * @param {Array} messages - The array of threshold messages from fetchDiscountThresholds().
@@ -64,7 +65,7 @@ async function createMetaobject(admin, handle, fields) {
   const mutation = `
     mutation CreateMetaobject($handle: String!, $fields: [MetaobjectFieldInput!]!) {
       metaobjectCreate(metaobject: {
-        type: "discount_messages"
+        type: "$app:discount_messages"
         handle: $handle
         fields: $fields
       }) {
