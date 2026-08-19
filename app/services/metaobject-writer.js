@@ -1,57 +1,31 @@
 // app/services/metaobject-writer.js
 
-// Merchant-owned metaobject type for the discount progress messages.
-// Created at runtime via the Admin API (no CLI deploy needed) so theme
-// Liquid can read it with the plain, universally-supported key
-// `shop.metaobjects['discount_messages']`.
-const DEFINITION_TYPE = 'discount_messages';
-const MESSAGES_FIELD_KEY = 'messages_json';
+// Merchant-owned metaobject type for discount thresholds. Each threshold is its
+// own entry with native fields, so theme Liquid can read it WITHOUT JSON
+// parsing (the `parse_json` filter is not functional in this theme's Liquid era).
+const DEFINITION_TYPE = 'discount_threshold';
 
 /**
- * Saves the discount threshold messages to a Shopify metaobject.
- * Ensures the merchant-owned "discount_messages" definition exists (with
- * storefront access) before writing the instance.
+ * Saves the discount threshold messages as individual metaobject entries
+ * (one per discount), each with native fields the theme can read directly.
  *
  * @param {Object} admin - The Shopify Admin API context.
  * @param {Array} messages - The array of threshold messages from fetchDiscountThresholds().
  */
 export async function saveDiscountMessages(admin, messages) {
-  // 0. Make sure the definition exists (idempotent; safe to call every time)
-  await ensureMetaobjectDefinition(admin);
+  // 1. Make sure the definition exists (idempotent)
+  await ensureThresholdDefinition(admin);
 
-  // 1. The handle (unique ID) for our metaobject instance
-  const handle = 'discount_messages';
-
-  // 2. Find the Online Store publication so the instance is visible to Liquid
+  // 2. Find the Online Store publication so entries are visible to Liquid
   const publicationId = await getOnlineStorePublicationId(admin);
 
-  // 3. Check if an instance (record) already exists
-  let metaobjectId = await getMetaobjectIdByHandle(admin, handle);
-
-  // 4. Prepare the data: Convert the messages array to a JSON string
-  const fields = [
-    {
-      key: MESSAGES_FIELD_KEY,
-      value: JSON.stringify(messages),
-    },
-  ];
-
-  // 5. Create or update the metaobject instance (active + published)
-  if (metaobjectId) {
-    // UPDATE existing record
-    await updateMetaobject(admin, metaobjectId, fields);
-    if (publicationId) {
-      await publishMetaobject(admin, metaobjectId, publicationId);
-    }
-    console.log(`✅ Updated metaobject (ID: ${metaobjectId}) with ${messages.length} messages.`);
-  } else {
-    // CREATE new record
-    metaobjectId = await createMetaobject(admin, handle, fields, publicationId);
-    console.log(`✅ Created new metaobject with ${messages.length} messages.`);
+  // 3. Upsert one entry per threshold (sorted ascending so handles are stable)
+  const sorted = [...messages].sort((a, b) => a.thresholdMinor - b.thresholdMinor);
+  for (let i = 0; i < sorted.length; i++) {
+    await upsertThreshold(admin, `discount-${i + 1}`, sorted[i], publicationId);
   }
 
-  // 6. Diagnostic: report the status Liquid will actually see
-  await logMetaobjectStatus(admin, metaobjectId);
+  console.log(`✅ Synced ${sorted.length} discount threshold(s) as metaobject entries.`);
 }
 
 // ============================================================
@@ -59,20 +33,22 @@ export async function saveDiscountMessages(admin, messages) {
 // ============================================================
 
 /**
- * Creates the merchant-owned metaobject definition with storefront access,
- * so theme Liquid (`shop.metaobjects['discount_messages']`) can read it.
- * If the definition already exists, ensures storefront access is ON.
+ * Creates the merchant-owned definition with storefront access and the
+ * native fields the theme reads. No-op if it already exists.
  */
-async function ensureMetaobjectDefinition(admin) {
+async function ensureThresholdDefinition(admin) {
   const mutation = `
     mutation EnsureDefinition {
       metaobjectDefinitionCreate(definition: {
         type: "${DEFINITION_TYPE}"
-        name: "Discount Messages"
-        description: "Discount threshold messages shown on the cart progress bar"
+        name: "Discount Thresholds"
+        description: "Discount progress-bar thresholds shown on the cart"
         access: { storefront: PUBLIC_READ }
         fieldDefinitions: [
-          { key: "${MESSAGES_FIELD_KEY}", name: "Messages JSON", type: "multi_line_text_field" }
+          { key: "title", name: "Title", type: "single_line_text_field" }
+          { key: "label", name: "Label", type: "single_line_text_field" }
+          { key: "threshold_minor", name: "Threshold (minor units)", type: "number_integer" }
+          { key: "enabled", name: "Enabled", type: "boolean" }
         ]
       }) {
         metaobjectDefinition { id }
@@ -95,90 +71,26 @@ async function ensureMetaobjectDefinition(admin) {
   }
 
   if (alreadyExists) {
-    // Definition exists — try to ensure storefront access, but never block the
-    // sync if the schema differs or the definition can't be located (the user
-    // can enable Storefront access manually in Settings → Custom data).
-    console.log('⚠️ Definition "discount_messages" already exists — ensuring storefront access (best effort)...');
-    try {
-      const findQuery = `
-        query GetDefinition {
-          metaobjectDefinitions(first: 50) {
-            nodes { id type }
-          }
-        }
-      `;
-      const findResponse = await admin.graphql(findQuery);
-      const findResult = await findResponse.json();
-      const def = (findResult.data?.metaobjectDefinitions?.nodes || []).find(
-        (n) => n.type === DEFINITION_TYPE
-      );
-
-      if (def) {
-        const updateMutation = `
-          mutation UpdateDefinition($id: ID!) {
-            metaobjectDefinitionUpdate(id: $id, definition: {
-              access: { storefront: PUBLIC_READ }
-            }) {
-              metaobjectDefinition { id }
-              userErrors { field message }
-            }
-          }
-        `;
-        const updateResponse = await admin.graphql(updateMutation, { variables: { id: def.id } });
-        const updateResult = await updateResponse.json();
-        const updateErrors = updateResult.data?.metaobjectDefinitionUpdate?.userErrors || [];
-        if (updateErrors.length > 0) {
-          console.log(`⚠️ Storefront access update returned: ${updateErrors.map((e) => `${e.field}: ${e.message}`).join(', ')}`);
-        } else {
-          console.log('✅ Storefront access ensured on existing definition.');
-        }
-      } else {
-        console.log('⚠️ Could not locate the existing definition to update — enable Storefront access manually in Settings → Custom data if the bar still doesn\'t show.');
-      }
-    } catch (err) {
-      console.log(`⚠️ Could not auto-ensure storefront access (${err.message}) — enable it manually in Settings → Custom data if needed.`);
-    }
+    console.log('⚠️ Definition "discount_threshold" already exists (storefront access should be enabled in Custom data).');
   } else {
-    console.log('✅ Metaobject definition "discount_messages" is ready (storefront access: PUBLIC_READ).');
+    console.log('✅ Metaobject definition "discount_threshold" is ready (storefront access: PUBLIC_READ).');
   }
 }
 
 /**
- * Fetches the ID of a metaobject instance by its handle.
- * Returns null if not found.
+ * Creates or updates one threshold entry (handle = `discount-<n>`).
  */
-async function getMetaobjectIdByHandle(admin, handle) {
-  const query = `
-    query GetMetaobject($handle: MetaobjectHandleInput!) {
-      metaobjectByHandle(handle: $handle) {
-        id
-      }
-    }
-  `;
+async function upsertThreshold(admin, handle, msg, publicationId) {
+  const fields = [
+    { key: 'title', value: String(msg.title ?? '') },
+    { key: 'label', value: String(msg.label ?? '') },
+    { key: 'threshold_minor', value: String(msg.thresholdMinor ?? 0) },
+    { key: 'enabled', value: 'true' },
+  ];
 
-  const response = await admin.graphql(query, {
-    variables: { handle: { type: DEFINITION_TYPE, handle } },
-  });
-  const { data } = await response.json();
-
-  return data.metaobjectByHandle?.id || null;
-}
-
-/**
- * Creates a new metaobject instance, active and published to the Online Store
- * so theme Liquid (`shop.metaobjects`) can see it.
- */
-async function createMetaobject(admin, handle, fields, publicationId) {
   const mutation = `
-    mutation CreateMetaobject($handle: String!, $fields: [MetaobjectFieldInput!]!, $publications: [PublicationInput!]) {
-      metaobjectCreate(
-        metaobject: {
-          type: "${DEFINITION_TYPE}"
-          handle: $handle
-          fields: $fields
-        }
-        publications: $publications
-      ) {
+    mutation UpsertThreshold($handle: MetaobjectHandleInput!, $fields: [MetaobjectFieldInput!]!) {
+      metaobjectUpsert(handle: $handle, metaobject: { fields: $fields }) {
         metaobject { id }
         userErrors { field message }
       }
@@ -186,54 +98,26 @@ async function createMetaobject(admin, handle, fields, publicationId) {
   `;
 
   const response = await admin.graphql(mutation, {
-    variables: {
-      handle,
-      fields,
-      publications: publicationId ? [{ publicationId }] : [],
-    },
+    variables: { handle: { type: DEFINITION_TYPE, handle }, fields },
   });
   const result = await response.json();
+  const errors = result.data?.metaobjectUpsert?.userErrors || [];
 
-  if (result.data.metaobjectCreate.userErrors.length > 0) {
-    const errors = result.data.metaobjectCreate.userErrors
-      .map((e) => `${e.field}: ${e.message}`)
-      .join(', ');
-    throw new Error(`Failed to create metaobject: ${errors}`);
+  if (errors.length > 0) {
+    const details = errors.map((e) => `${e.field}: ${e.message}`).join(', ');
+    throw new Error(`Failed to upsert threshold ${handle}: ${details}`);
   }
 
-  return result.data.metaobjectCreate.metaobject.id;
+  const id = result.data.metaobjectUpsert.metaobject.id;
+
+  if (publicationId) {
+    await publishMetaobject(admin, id, publicationId);
+  }
 }
 
 /**
- * Updates an existing metaobject instance, keeping it active.
- */
-async function updateMetaobject(admin, id, fields) {
-  const mutation = `
-    mutation UpdateMetaobject($id: ID!, $fields: [MetaobjectFieldInput!]!) {
-      metaobjectUpdate(id: $id, metaobject: { fields: $fields }) {
-        metaobject { id }
-        userErrors { field message }
-      }
-    }
-  `;
-
-  const response = await admin.graphql(mutation, {
-    variables: { id, fields },
-  });
-  const result = await response.json();
-
-  if (result.data.metaobjectUpdate.userErrors.length > 0) {
-    const errors = result.data.metaobjectUpdate.userErrors
-      .map((e) => `${e.field}: ${e.message}`)
-      .join(', ');
-    throw new Error(`Failed to update metaobject: ${errors}`);
-  }
-
-  return result.data.metaobjectUpdate.metaobject.id;
-}
-
-/**
- * Publishes the metaobject instance to a publication (e.g. Online Store).
+ * Publishes the metaobject entry to a publication (e.g. Online Store) so
+ * theme Liquid (`metaobjects['discount_threshold']`) can see it.
  * Best-effort: logs instead of throwing so the sync can continue.
  */
 async function publishMetaobject(admin, id, publicationId) {
@@ -252,8 +136,6 @@ async function publishMetaobject(admin, id, publicationId) {
     const errors = result.data?.metaobjectPublish?.userErrors || [];
     if (errors.length > 0) {
       console.log(`⚠️ metaobjectPublish: ${errors.map((e) => `${e.field}: ${e.message}`).join(', ')}`);
-    } else {
-      console.log(`📌 Published metaobject to Online Store.`);
     }
   } catch (err) {
     console.log(`⚠️ metaobjectPublish failed: ${err.message}`);
@@ -277,29 +159,11 @@ async function getOnlineStorePublicationId(admin) {
     const pubs = result.data?.publications?.nodes || [];
     const match = pubs.find((p) => /online store/i.test(p.name));
     if (!match) {
-      console.log(`⚠️ No "Online Store" publication found (got: ${pubs.map((p) => p.name).join(', ') || 'none'}) — instance may not be visible to Liquid until published.`);
+      console.log(`⚠️ No "Online Store" publication found (got: ${pubs.map((p) => p.name).join(', ') || 'none'}).`);
     }
     return match?.id || null;
   } catch (err) {
     console.log(`⚠️ Could not look up Online Store publication: ${err.message}`);
     return null;
-  }
-}
-
-/**
- * Logs the instance status Liquid will see (draft instances return nil).
- */
-async function logMetaobjectStatus(admin, id) {
-  try {
-    const query = `
-      query MetaobjectStatus($id: ID!) {
-        metaobject(id: $id) { id status }
-      }
-    `;
-    const response = await admin.graphql(query, { variables: { id } });
-    const result = await response.json();
-    console.log(`📋 Metaobject status: ${result.data?.metaobject?.status ?? '(no status field — not publishable)'}`);
-  } catch (err) {
-    console.log(`⚠️ Could not read metaobject status: ${err.message}`);
   }
 }
