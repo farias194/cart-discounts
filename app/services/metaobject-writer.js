@@ -21,9 +21,15 @@ export async function saveDiscountMessages(admin, messages) {
 
   // 3. Upsert one entry per threshold (sorted ascending so handles are stable)
   const sorted = [...messages].sort((a, b) => a.thresholdMinor - b.thresholdMinor);
+  const currentHandles = new Set();
   for (let i = 0; i < sorted.length; i++) {
-    await upsertThreshold(admin, `discount-${i + 1}`, sorted[i], publicationId);
+    const handle = `discount-${i + 1}`;
+    currentHandles.add(handle);
+    await upsertThreshold(admin, handle, sorted[i], publicationId);
   }
+
+  // 4. Remove entries whose discounts no longer exist (best effort)
+  await deleteStaleThresholds(admin, currentHandles);
 
   console.log(`✅ Synced ${sorted.length} discount threshold(s) as metaobject entries.`);
 }
@@ -165,5 +171,58 @@ async function getOnlineStorePublicationId(admin) {
   } catch (err) {
     console.log(`⚠️ Could not look up Online Store publication: ${err.message}`);
     return null;
+  }
+}
+
+/**
+ * Deletes threshold entries whose handles aren't in the current set, so
+ * removed discounts disappear from the progress bar. Best effort: if the
+ * listing query fails (2026-era schema drift), logs and continues.
+ */
+async function deleteStaleThresholds(admin, currentHandles) {
+  try {
+    const query = `
+      query ListThresholds {
+        metaobjects(first: 100, type: "${DEFINITION_TYPE}") {
+          nodes { id handle }
+        }
+      }
+    `;
+    const response = await admin.graphql(query);
+    const result = await response.json();
+    const nodes = result.data?.metaobjects?.nodes || [];
+
+    const stale = nodes.filter((n) => !currentHandles.has(n.handle));
+    for (const entry of stale) {
+      await deleteMetaobject(admin, entry.id);
+    }
+    if (stale.length > 0) {
+      console.log(`🧹 Removed ${stale.length} stale threshold entr${stale.length === 1 ? 'y' : 'ies'}.`);
+    }
+  } catch (err) {
+    console.log(`⚠️ Could not clean stale entries: ${err.message}`);
+  }
+}
+
+/**
+ * Deletes a single metaobject entry (best effort).
+ */
+async function deleteMetaobject(admin, id) {
+  try {
+    const mutation = `
+      mutation DeleteMetaobject($id: ID!) {
+        metaobjectDelete(id: $id) {
+          userErrors { field message }
+        }
+      }
+    `;
+    const response = await admin.graphql(mutation, { variables: { id } });
+    const result = await response.json();
+    const errors = result.data?.metaobjectDelete?.userErrors || [];
+    if (errors.length > 0) {
+      console.log(`⚠️ Could not delete ${id}: ${errors.map((e) => `${e.field}: ${e.message}`).join(', ')}`);
+    }
+  } catch (err) {
+    console.log(`⚠️ metaobjectDelete failed for ${id}: ${err.message}`);
   }
 }
