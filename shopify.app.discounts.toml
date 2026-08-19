@@ -16,5 +16,4 @@ scopes = "read_discounts,write_metaobject_definitions,write_metaobjects,write_pr
 redirect_urls = [ "https://example.com/api/auth" ]
 
 [build]
-include_config_on_deploy = true
 automatically_update_urls_on_dev = true
